@@ -3,8 +3,10 @@
 :central_server:      <%= secrets['central_server'] %>
 
 :disabled_actions:
+  - api_document_import
   - large_document_import
   - reindex_everything
+  - calculate_aspect_ratios
 
 # The following settings allow you to control the number of workers that can run
 # on a given node, to prevent the node from becoming overloaded. 'max_workers'
@@ -39,6 +41,10 @@
 # something similar, all files will be saved inside of the 'local_storage_path'.
 # The default value if left unspecified is '/tmp/cloud_crowd_storage'.
 # :local_storage_path:  /tmp/cloud_crowd_storage
+
+# Setting the temp_storage_path allows us to direct where
+# CloudCrowd will keep files that it's currently processing
+:temp_storage_path:   /mnt/cloud_crowd
 
 # Use HTTP Basic Auth for all requests? (Includes all internal worker requests
 # to the central server). If yes, specify the login and password that all

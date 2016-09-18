@@ -9,20 +9,24 @@ class Page < ActiveRecord::Base
   IMAGE_SIZES['thumbnail']  = '60x75!'
 
   MAX_PAGE_RESULTS = 1000
-
+  
   include DC::Store::DocumentResource
   include DC::Search::Matchers
   include ActionView::Helpers::SanitizeHelper
   extend ActionView::Helpers::SanitizeHelper::ClassMethods
 
   belongs_to :document
+  belongs_to :account
+  belongs_to :organization
 
-  validates_numericality_of :page_number, :greater_than_or_equal_to => 1
+  validates :page_number, :numericality => { :greater_than_or_equal_to => 1 }
 
   before_update :track_text_changes
 
   searchable do
-    text    :text
+    text    :text do
+      DC::Search.clean_text(text)
+    end
     integer :document_id
     integer :account_id
     integer :organization_id
@@ -46,11 +50,9 @@ class Page < ActiveRecord::Base
   # page's full text, relative to the combined full text of the entire document.
   def self.refresh_page_map(document)
     pos = -1
-    result = self.connection.execute("select id, length(text) from pages where document_id = #{document.id} order by page_number asc;")
-    result.each do |item|
-      id, length = item['id'].to_i, item['length'].to_i
-      Page.update_all("start_offset = #{pos + 1}, end_offset = #{pos + length}", "id = #{id}")
-      pos = pos + length
+    document.pages.order(:page_number).pluck( :id, 'length(text)' ).each do | id, length |
+      Page.where( :id=>id ).update_all( :start_offset => pos + 1, :end_offset => pos + length )
+      pos = pos + length.to_i
     end
     document.reset_char_count!
   end
@@ -76,17 +78,16 @@ class Page < ActiveRecord::Base
     rubyre  = /(#{ parts.map {|part| "\\b#{part}\\b" }.join('|') })/i
 
     conds   = ["document_id = ? and text ~* ?", doc_id, psqlre]
-    pages   = Page.all(:conditions => conds, :order => 'page_number asc', :limit => limit)
-    count   = Page.count(:conditions => conds)
+    query   = Page.where( conds )
+    pages   = query.order('page_number asc').limit( limit )
     {
       :mentions => pages.map {|p| {:page => p.page_number, :text => p.excerpt(rubyre)} }.select {|p| p[:text] },
-      :total    => count
+      :total    => query.count
     }
   end
 
   def excerpt(regex, context=150)
-    utf     =  text.mb_chars
-    match   =  utf.match(regex)
+    match   =  text.match(regex)
     return nil unless match
     excerpt =  match.pre_match.length >= context ? match.pre_match[-context..-1] : match.pre_match
     excerpt += "<b>#{ match.to_s }</b>"
@@ -98,10 +99,59 @@ class Page < ActiveRecord::Base
     start_offset <= occurrence.offset && end_offset > occurrence.offset
   end
 
+  def image_url(size = 'normal')
+    document.page_image_url(page_number, size)
+  end
+
   def authorized_image_url(size)
     DC::Store::AssetStore.new.authorized_url(document.page_image_path(page_number, size))
   end
 
+  def text_path
+    document.page_text_path(page_number)
+  end
+
+  def text_url
+    File.join(DC.server_root, text_path)
+  end
+
+  def canonical_path(format = :json)
+    "/documents/#{document.canonical_id}/pages/#{page_number}.#{format}"
+  end
+
+  def canonical_url(format = :json)
+    File.join(DC.server_root, canonical_path(format))
+  end
+
+  # `contextual` means "show this thing in the context of its document parent",
+  # which right now correlates to its page-anchored version.
+  def contextual_path
+    "/documents/#{document.canonical_id}.html\#document/p#{page_number}"
+  end
+
+  def contextual_url
+    File.join(DC.server_root, contextual_path)
+  end
+
+  def oembed_url
+    "#{DC.server_root}/api/oembed.json?url=#{CGI.escape(self.canonical_url(:html))}"
+  end
+  
+  def title
+    "Page #{page_number} of #{document.title}"
+  end
+
+  def title_lower
+    "page #{page_number} of #{document.title}"
+  end
+
+  def safe_aspect_ratio
+    aspect_ratio || 8.5/11
+  end
+
+  def inverted_aspect_ratio
+    1 / safe_aspect_ratio
+  end
 
   private
 

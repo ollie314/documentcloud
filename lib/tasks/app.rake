@@ -1,15 +1,35 @@
 namespace :app do
 
+  namespace :backup do
+
+    desc "Backup a file to the asset store that corresponds to the current environment."
+    task :logfile, [:type, :src_file]=>:environment do |t, args|
+      source = args[:src_file]
+      source_name = File.basename(source).sub(/\.1$/, '')
+      target_name = "#{args[:type]}/#{Date.today}.#{`hostname`.chomp}.#{source_name}"
+      DC::Store::AssetStore.new.save_backup(args[:src_file], target_name)
+    end
+
+  end
+
   task :start do
     sh "sudo /etc/init.d/nginx start"
   end
 
   task :devstart do
-    sh "rake crowd:server:start && rake crowd:node:start && rake sunspot:solr:start && sudo nginx"
+    invoke 'sunspot:solr:start'
+    invoke 'crowd:server:start'
+    invoke 'crowd:node:start'
+  end
+
+  task :devrestart do
+    invoke 'app:restart'
+    invoke 'crowd:node:restart'
   end
 
   task :restart_solr do
-    sh "rake #{RAILS_ENV} sunspot:solr:stop sunspot:solr:start"
+    invoke "sunspot:solr:stop"
+    invoke "sunspot:solr:start"
   end
 
   task :stop do
@@ -26,19 +46,30 @@ namespace :app do
   end
 
   task :console do
-    exec "script/console #{RAILS_ENV}"
+    exec "rails console #{RAILS_ENV}"
   end
 
   desc "Update the Rails application"
   task :update do
-    sh 'git pull && bundle install'
-    sleep 0.2
+    sh 'cd secrets && git pull && cd ..'
+    sh 'git pull'
+    sleep 0.2 # TODO: make this event driven not just waiting for .2 seconds
+    sh 'bundle install'
+  end
+
+  desc "Update Bower dependencies"
+  task :bower do
+    options = ['-F']
+    options.push "--production" if Rails.env.staging? or Rails.env.production?
+    sh "bower install #{options.join(' ')}"
   end
 
   desc "Repackage static assets"
   task :jammit do
-    config = YAML.load_file("#{Rails.root}/config/document_cloud.yml")[RAILS_ENV]
-    sh "sudo su www-data -c \"jammit -u http://#{config['server_root']}\""
+    require File.join(Rails.root, 'config', 'initializers', 'configure_jammit')
+    config = YAML.load(ERB.new(File.read("#{Rails.root}/config/document_cloud.yml")).result(binding))[Rails.env]
+    #sh "jammit -u http://#{config['server_root']}"
+    Jammit.package!(base_url: "http://#{config['server_root']}", config_paths: DC.jammit_configuration)
   end
 
   desc "Publish all documents with expired publish_at timestamps"
@@ -49,30 +80,23 @@ namespace :app do
   namespace :clearcache do
 
     desc "Clears out cached document JS files."
-    task :docs do
-      sh 'find ./public/documents/ -maxdepth 1 -name "*.js" -delete'
+    task :documents do
+      print `find ./public/documents/ -maxdepth 1 -name "*.js" -delete`
+      print `find ./public/documents/ -maxdepth 1 -name "*.js.gz" -delete`
       invoke 'app:clearcache:notes'
     end
 
     desc "Clears out cached annotation JS files."
     task :notes do
-      sh 'find ./public/documents/*/annotations/ -maxdepth 1 -name "*.js" -delete'
+      print `find ./public/documents/*/annotations/ -maxdepth 1 -name "*.js" -delete`
+      print `find ./public/documents/*/annotations/ -maxdepth 1 -name "*.js.gz" -delete`
     end
 
     desc "Purges cached search embeds."
     task :search do
-      sh "rm -rf ./public/search/embed/*"
+      print `rm -rf ./public/search/embed/*`
     end
 
-  end
-
-end
-
-namespace :openoffice do
-
-  task :start do
-    utility = RUBY_PLATFORM.match(/darwin/) ? "/Applications/LibreOffice.app/Contents/MacOS/soffice.bin" : "soffice"
-    sh "nohup #{utility} --headless --accept=\"socket,host=127.0.0.1,port=8100;urp;\" --nofirststartwizard > log/soffice.log 2>&1 & echo $! > ./tmp/pids/soffice.pid"
   end
 
 end

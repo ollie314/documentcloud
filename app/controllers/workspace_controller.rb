@@ -6,20 +6,19 @@ class WorkspaceController < ApplicationController
   # Regex that matches missed markdown links in `[title][]` format.
   MARKDOWN_LINK_REPLACER = /\[([^\]]*?)\]\[\]/i
 
-  before_filter :bouncer, :except => :index if Rails.env.staging?
+  before_action :bouncer, :except => :index if exclusive_access?
 
-  before_filter :prefer_secure,   :only => [:index]
+  before_action :secure_only
 
   # Main documentcloud.org page. Renders the workspace if logged in or
   # searching, the home page otherwise.
   def index
-
     if logged_in?
       if current_account.real?
         @projects = Project.load_for(current_account)
         @current_organization = current_account.organization
         @organizations = Organization.all_slugs
-        @has_documents = Document.owned_by(current_account).count(:limit => 1) > 0
+        @has_documents = Document.owned_by(current_account).exists?
         return render :template => 'workspace/index'
       else
         return redirect_to '/public/search'
@@ -46,7 +45,7 @@ class WorkspaceController < ApplicationController
 
   # Page for unsupported browsers, to request an upgrade.
   def upgrade
-    render :layout => false
+    render :layout => nil
   end
 
 end

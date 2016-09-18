@@ -1,1 +1,1 @@
-<%= @callback %>(<%= @response.to_json %>);
+<%= callback %>(<%= raw json_escape(obj.to_json) %>);

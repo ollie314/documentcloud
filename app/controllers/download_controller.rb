@@ -2,10 +2,16 @@ class DownloadController < ApplicationController
   include DC::ZipUtils
 
   layout nil
+  
+  READONLY_ACTIONS = [
+    :bulk_download, :send_pdfs, :send_text, :send_viewer
+  ]
+  before_action :read_only_error, :except => READONLY_ACTIONS if read_only?
 
   def bulk_download
-    @documents = Document.accessible(current_account, current_organization).find_all_by_id(params[:args][0...-1])
-    case params[:args].last
+    *document_ids, action = params[:args].split('/')
+    @documents = Document.accessible(current_account, current_organization).where( :id=>document_ids )
+    case action
     when 'original_documents' then send_pdfs
     when 'document_text'      then send_text
     when 'document_viewer'    then send_viewer

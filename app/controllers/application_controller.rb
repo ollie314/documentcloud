@@ -5,34 +5,136 @@ class ApplicationController < ActionController::Base
 
   BasicAuth = ActionController::HttpAuthentication::Basic
 
-  protect_from_forgery
+  protect_from_forgery with: :exception
+  skip_before_action :verify_authenticity_token, if: :embeddable?
 
-  filter_parameter_logging :password
-
-  before_filter :set_ssl
+  before_action :set_ssl
+  before_action :validate_session
+  after_action :set_cache_statement
 
   if Rails.env.development?
-    around_filter :perform_profile
-    after_filter  :debug_api
+    around_action :perform_profile
+    after_action :debug_api
   end
 
-  if Rails.env.production?
-    around_filter :notify_exceptions
-  end
+  around_action :notify_exceptions
 
   protected
+  
+  def self.read_only?
+    Rails.application.config.read_only
+  end
+  
+  def read_only_error
+    service_unavailable(:error => 'Sorry, actions that write to the database are currently disabled for maintenance.')
+  end
 
-  # Convenience method for responding with JSON. Sets the content type,
-  # serializes, and allows empty responses. If json'ing an ActiveRecord object,
-  # and the object has errors on it, a 409 Conflict will be returned with a
+  def embeddable?
+    request.format.json? or 
+    request.format.jsonp? or 
+    request.format.js? or
+    request.format.text? or
+    request.format.txt? or
+    request.format.xml?
+  end
+
+  def cachable?
+    request.get? and not logged_in?
+  end
+  
+  def make_oembeddable(resource)
+    # Resource should have both an `oembed_url` and a `title`
+    @oembeddable_resource = resource
+  end
+
+  def maybe_set_cors_headers
+    return unless request.headers['Origin']
+    headers['Access-Control-Allow-Origin'] = request.headers['Origin']
+    headers['Access-Control-Allow-Methods'] = 'OPTIONS, GET, POST, PUT, DELETE'
+    headers['Access-Control-Allow-Headers'] = 'Accept,Authorization,Content-Length,Content-Type,Cookie'
+    headers['Access-Control-Allow-Credentials'] = 'true'
+  end
+  
+  def set_cache_statement(statement=nil)
+    # https://developers.google.com/web/fundamentals/performance/optimizing-content-efficiency/http-caching
+    # https://www.digitalocean.com/community/tutorials/understanding-nginx-http-proxying-load-balancing-buffering-and-caching
+    headers['Cache-Control'] ||= case
+    when statement
+      statement
+    when cachable?
+      "public, max-age=10"
+    else
+      "no-cache"
+    end
+  end
+  
+  # Convenience method for responding with JSON. Supports empty responses, 
+  # specifying status codes, and adding CORS headers. If JSONing an 
+  # ActiveRecord object with errors, a 400 Bad Request will be returned with a
   # list of error messages.
-  def json(obj, status=200)
+  def json(obj, options={})
+    # Compatibility: second param used to be `status` and take a numeric status 
+    # code. Until we've purged all these, do a check.
+    options = { :status => options } if options.is_a?(Numeric)
+
+    options = {
+      :status => 200,
+      :cors   => false
+    }.merge(options)
+
     obj = {} if obj.nil?
     if obj.respond_to?(:errors) && obj.errors.any?
-      obj = {'errors' => obj.errors.full_messages}
-      status = 409
+      response = {
+        :json   => { :errors => obj.errors.full_messages },
+        :status => 400
+      }
+    else
+      response = {
+        :json   => obj,
+        :status => options[:status]
+      }
     end
-    render :json => obj, :status => status
+
+    # If the request has already set the CORS headers, don't overwrite them
+    # Sending the wildcard origin that will dissallow sending cookies for 
+    # authentication.
+    headers['Access-Control-Allow-Origin'] = '*' if options[:cors] && !headers.has_key?('Access-Control-Allow-Origin')
+
+    render response
+  end
+
+  def has_callback?
+    !!params[:callback]
+  end
+
+  # If the request is asking for JSONP (i.e., has a `callback` parameter), then
+  # wrap the JSON and render as JSONP.
+  def render_as_jsonp(obj, options={})
+    options = { :status => 200 }.merge(options)
+    response = {
+      :partial      => 'common/jsonp.js',
+      :locals       => { obj: obj, callback: params[:callback] },
+      :content_type => 'application/javascript',
+      :status       => options[:status]
+    }
+
+    render response
+  end
+
+  # Return the contents of `obj` as cross-origin-allowed JSON or, if it has a 
+  # `callback` parameter, as JSONP.
+  def render_cross_origin_json(obj=nil, options={})
+    # Compatibility: Previous version expected the `@response` instance var, so 
+    # until we modify all instances to pass in `obj`, set it to `@response`.
+    obj ||= @response
+
+    return render_as_jsonp(obj, options) if has_callback?
+
+    options = {
+      :cors => true
+    }.merge(options)
+
+    json obj, options
   end
 
   # for use by actions that may be embedded in an iframe
@@ -41,22 +143,13 @@ class ApplicationController < ActionController::Base
     # explanation of what these mean: http://www.p3pwriter.com/LRN_111.asp
     headers['P3P'] = 'CP="IDC DSP COR ADM DEVi TAIi PSA PSD IVAi IVDi CONi HIS OUR IND CNT"'
   end
-
-  # If the request is asking for JSONP (eg. has a 'callback' parameter), then
-  # short-circuit, and return the rendered JSONP.
-  def jsonp_request?
-    return false unless params[:callback]
-    @callback = params[:callback]
-    render :partial => 'common/jsonp.js', :type => :js
-    true
+  
+  def allow_iframe
+    response.headers.except! 'X-Frame-Options'
   end
-
-  # Make a JSONP-aware JSON response, using the contents of `@response`
-  # Where we allow JSONP, we also allow CORS.
-  def json_response
-    return if jsonp_request?
-    headers['Access-Control-Allow-Origin'] = '*'
-    json @response
+  
+  def expire_pages(paths)
+    [paths].flatten.each { |path| expire_page path }
   end
 
   # Select only a sub-set of passed parameters. Useful for whitelisting
@@ -66,42 +159,69 @@ class ApplicationController < ActionController::Base
     hash.each {|key, value| filtered[key.to_sym] = value if keys.include?(key.to_sym) }
     filtered
   end
+  
+  def session_valid?
+    # session is valid if and only if user is logged_in? and cookies['dc_logged_in']
+    (logged_in? and cookies['dc_logged_in']) or (not logged_in? and not cookies['dc_logged_in'])
+  end
+  
+  def validate_session
+    unless session_valid?
+      clear_login_state
+      forbidden 
+    end
+  end
 
   def logged_in?
     !!current_account
   end
 
+  def clear_login_state
+    cookies.delete 'dc_logged_in'
+    reset_session
+  end
+
   def login_required
     return true if logged_in?
-    cookies.delete 'dc_logged_in'
+    clear_login_state
     forbidden
   end
 
   def api_login_required
     authenticate_or_request_with_http_basic("DocumentCloud") do |email, password|
-      return false unless @current_account = Account.log_in(email, password)
-      @current_organization = @current_account.organization
-      true
+      # Don't mistakenly authenticate the Bouncer.
+      if email == DC::SECRETS['guest_username'] && password == DC::SECRETS['guest_password']
+        current_account && current_organization
+      elsif @current_account = Account.log_in(email, password)
+        @current_organization = @current_account.organization
+        @current_account
+      else
+        return forbidden
+      end
     end
   end
 
   def api_login_optional
-    return if BasicAuth.authorization(request).blank?
-    return unless @current_account = Account.log_in(*BasicAuth.user_name_and_password(request))
-    @current_organization = @current_account.organization
+    if request.authorization.blank?
+      # Public user
+      true
+    else
+      # The user is trying to log in. If the username/password is wrong, fail.
+      api_login_required
+    end
   end
-
+  
   def admin_required
     ( logged_in? && current_account.dcloud_admin? ) || forbidden
   end
 
   def prefer_secure
-    secure_only if cookies['dc_logged_in'] == 'true'
+    secure_only(302) if logged_in?
   end
 
-  def secure_only
-    if !request.ssl? && (request.format.html? || request.format.nil?)
-      redirect_to DC.server_root(:force_ssl => true) + request.request_uri
+  def secure_only(status=301)
+    if !request.ssl?
+      redirect_to DC.server_root(:force_ssl => true) + request.original_fullpath, :status => status
     end
   end
 
@@ -119,52 +239,84 @@ class ApplicationController < ActionController::Base
 
   def handle_unverified_request
     error = RuntimeError.new "CSRF Verification Failed"
-    LifecycleMailer.deliver_exception_notification(error, params)
+    LifecycleMailer.exception_notification(error, params).deliver_now
     forbidden
   end
 
-  def bad_request
-    render :file => "#{Rails.root}/public/400.html", :status => 400
-    false
+  def bad_request(options={})
+    options = { :error => "Bad Request" }.merge(options)
+    error_response 400, options
   end
 
   # Return forbidden when the access is unauthorized.
-  def forbidden
-    @next = CGI.escape(request.request_uri)
-    render :file => "#{Rails.root}/public/403.html", :status => 403
-    false
+  def forbidden(options = {})
+    options = {
+      :error  => "Forbidden",
+      :locals => { post_login_url: CGI.escape(request.original_url) }
+    }.merge(options)
+    error_response 403, options
   end
 
   # Return not_found when a resource can't be located.
-  def not_found
-    render :file => "#{Rails.root}/public/404.html", :status => 404
-    false
+  def not_found(options={})
+    options = { :error => "Not Found" }.merge(options)
+    error_response 404, options
+  end
+
+  # Return conflict when e.g. there's an edit conflict.
+  def conflict(options={})
+    options = { :error => "Conflict" }.merge(options)
+    error_response 409, options
   end
 
   # Return server_error when an uncaught exception bubbles up.
-  def server_error(e)
-    render :file => "#{Rails.root}/public/500.html", :status => 500
-    false
+  def server_error(e, options={})
+    options = { :error => "Internal Server Error" }.merge(options)
+    error_response 500, options
+  end
+
+  # A resource was requested in a way we can't fulfill (e.g. an oEmbed
+  # request for XML when we only provide JSON)
+  def not_implemented(options={})
+    options = { :error => "Not Implemented" }.merge(options)
+    error_response 501, options
+  end
+
+  # We're offline in an expected way
+  def service_unavailable(options={})
+    options = { :error => "Service Unavailable" }.merge(options)
+    error_response 503, options
   end
 
   # Simple HTTP Basic Auth to make sure folks don't snoop where the shouldn't.
   def bouncer
     authenticate_or_request_with_http_basic("DocumentCloud") do |login, password|
-      login == SECRETS['guest_username'] && password == SECRETS['guest_password']
+      login == DC::SECRETS['guest_username'] && password == DC::SECRETS['guest_password']
     end
+  end
+
+  def self.exclusive_access?
+    Rails.env.staging?
   end
 
   def set_ssl
     Thread.current[:ssl] = request.ssl?
   end
+  
+  ERRORS_TO_IGNORE = [
+    AbstractController::ActionNotFound, 
+    ActionController::RoutingError, 
+    ActiveRecord::RecordNotFound,
+    ActionController::UnknownFormat
+  ]
 
   # Email production exceptions to us. Once every 2 minutes at most, per process.
   def notify_exceptions
     begin
       yield
     rescue Exception => e
-      ignore = e.is_a?(ActionController::UnknownAction) || e.is_a?(ActionController::RoutingError)
-      LifecycleMailer.deliver_exception_notification(e, params) unless ignore
+      ignore = ERRORS_TO_IGNORE.any?{ |kind| e.is_a? kind }
+      LifecycleMailer.exception_notification(e, params).deliver_now unless ignore
       raise e
     end
   end
@@ -187,6 +339,27 @@ class ApplicationController < ActionController::Base
   # the JSON visible in the browser.
   def debug_api
     response.content_type = 'text/plain' if params[:debug]
+  end
+
+  private
+  
+  # Generic error response helper. Defaults to 200 because never called directly
+  def error_response(status=200, options={})
+    options = {
+      :locals => {}
+    }.merge(options)
+
+    obj          = {}
+    obj[:error]  = options[:error]  if options[:error]
+    obj[:errors] = options[:errors] if options[:errors]
+
+    respond_to do |format|
+      format.js   { render_cross_origin_json(obj, {:status => status}) }
+      format.json { render_cross_origin_json(obj, {:status => status}) }
+      format.any  { render :file => "#{Rails.root}/public/#{status}.html", :locals => options[:locals], :status => status, :layout => nil }
+    end
+
+    false
   end
 
 end

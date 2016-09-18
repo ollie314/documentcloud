@@ -42,6 +42,20 @@ input.hidden_submit {
   -moz-user-select: none;
   user-select: none;
 }
+.mark_responsive:after {
+  content: attr(data-responsive-text);
+  background-color: orange;
+  color: white;
+  font-weight: bold;
+  text-transform: uppercase;
+  padding: 2px 4px;
+  margin-left: 6px;
+  border-radius: 2px;
+  -webkit-font-smoothing: antialiased;
+}
+.mark_responsive.disabled:after {
+  display: none;
+}
 
 /*------------------------------ Gradients ---------------------------------*/
 .gradient_white {
@@ -105,6 +119,7 @@ input.hidden_submit {
   body.overlay #overlay {
     display: block;
   }
+
 
 /*------------------------------ Text Inputs ---------------------------------*/
 div.text_input {
@@ -325,6 +340,12 @@ textarea.text_area {
     line-height: 11px;
   }
 
+  button.minibutton {
+    -webkit-box-sizing: content-box;
+       -moz-box-sizing: content-box;
+            box-sizing: content-box;
+  }
+
 
 /*--------------------------------- Menus ------------------------------------*/
 .minibutton.menu {
@@ -511,6 +532,7 @@ textarea.text_area {
     margin-bottom: 29px;
     font-size: 16px;
     text-align: left;
+    max-width: 450px;
   }
     .dialog span.subtitle {
       color: #333;
@@ -530,8 +552,8 @@ textarea.text_area {
     }
   .dialog .information {
     position: absolute;
-    padding: 5px 10px;
-    max-width: 270px;
+    padding: 5px 0;
+    max-width: 250px;
     top: 29px; right: 20px;
     font-size: 10px;
     color: #ccc;
@@ -658,7 +680,7 @@ iframe.hidden_iframe {
   position: absolute;
   z-index: 100;
   border: 1px solid #09f;
-  background: url(/images/embed/ui/semiwhite.png);
+  background-color: rgba(234, 239, 255, 0.33);
 }
 
 /*------------------------------ Occurrences ----------------------------------*/
@@ -717,4 +739,27 @@ iframe.hidden_iframe {
       color: #000;
       font-size: 12px;
       margin-bottom: 7px;
+    }
+
+
+/*--------------------------- Notification Bar -------------------------------*/
+    
+    /*#container {
+      position: relative;
+    }*/
+
+    .notification_bar {
+      background-color: #ffc;
+      font-size: 11pt;
+      text-align: center;
+      padding: 10px;
+      font-family: sans-serif;
+    }
+    .notification_bar .notification_action {
+      display: inline-block;
+      padding: 8px;
+      background-color: rgb(90, 118, 160);
+      color: white;
+      text-decoration: none;
+      -webkit-font-smoothing: antialiased;
     }

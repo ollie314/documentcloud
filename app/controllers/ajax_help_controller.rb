@@ -7,7 +7,7 @@ class AjaxHelpController < ApplicationController
     :index            => 'Introduction',
     :tour             => 'Guided Tour',
     :public           => 'The Public Catalog',
-    :accounts         => 'Adding Accounts',
+    :accounts         => 'Managing Accounts',
     :searching        => 'Searching Documents and Data',
     :uploading        => 'Uploading Documents',
     :troubleshooting  => 'Troubleshooting Failed Uploads',
@@ -15,15 +15,17 @@ class AjaxHelpController < ApplicationController
     :privacy          => 'Privacy',
     :collaboration    => 'Collaboration',
     :notes            => 'Editing Notes and Sections',
-    :publishing       => 'Publishing &amp; Embedding',
+    :publishing       => 'Publishing and Embedding',
     :api              => 'API'
   }
 
   layout false
 
+  skip_before_action :verify_authenticity_token
+
   def contact_us
     return bad_request unless params[:message]
-    LifecycleMailer.deliver_contact_us(current_account, params)
+    LifecycleMailer.contact_us(current_account, params).deliver_now
     json nil
   end
 
@@ -53,7 +55,7 @@ class AjaxHelpController < ApplicationController
     contents = File.read( help_for_language( language, resource ) )
     links = File.exists?( links_for_language( language, resource ) ) ?
       File.read( links_for_language( language, resource ) ) : ""
-    render :text => RDiscount.new(contents+links).to_html, :type => :html
+    render :plain => RDiscount.new(contents+links).to_html
   end
 
 end

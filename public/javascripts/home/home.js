@@ -2,7 +2,7 @@ $(function() {
 
   window.HomePage = Backbone.View.extend({
 
-    FAVORITES_URL : '//twitter.com/favorites/documentcloud.json?callback=?',
+    BLOG_HEADLINES_URL : '//blog.documentcloud.org/?json=get_recent_posts&count=7&callback=?',
 
     el : document.body,
 
@@ -21,7 +21,7 @@ $(function() {
       this.emailInput     = $('#account_email');
       this.passwordInput  = $('#account_password');
       _.invoke([this.box, this.emailInput, this.passwordInput], 'placeholder');
-      $(_.bind(this.loadTweets, this));
+      $(_.bind(this.loadBlogHeadlines, this));
     },
 
     login : function() {
@@ -49,19 +49,21 @@ $(function() {
       $('#search_box_wrapper').removeClass('focus');
     },
 
-    loadTweets : function() {
-      if (!$(document.body).hasClass('homepage')) return;
+    loadBlogHeadlines : function() {
       var formatDate = DateUtils.create("%b %e, %Y");
-      $.getJSON(this.FAVORITES_URL, function(json) {
-        var tweets = json.slice(0, 3);
-        var html   = "";
-        _.each(tweets, function(tweet, i) {
-          html += JST['home/tweet'](_.extend(tweet, {
-            index: i,
-            date : formatDate(new Date(Date.parse(tweet.created_at)))
-          }));
-        });
-        $('#tweets').html(html).show();
+      $.getJSON(this.BLOG_HEADLINES_URL, function(json) {
+        var posts = json.posts;
+        if (posts.length > 0) {
+          var headlines_html = "";
+          _.each(posts, function(post, i) {
+            headlines_html += JST['home/blog_headline'](_.extend(post, {
+              date : formatDate(DateUtils.parseRfc(post.date)),
+            }));
+          });
+          $('#news_headlines').html(headlines_html);
+        } else {
+          $('#news').hide();
+        }
       });
     }
 

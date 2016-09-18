@@ -1,13 +1,12 @@
-
 class FeaturedReport < ActiveRecord::Base
 
-  validates_presence_of :url, :title, :organization, :writeup
+  validates :url, :title, :organization, :writeup, :presence=>true
   validate do | rec |
     rec.errors.add(:article_date, 'is invalid') if rec.article_date.blank?
   end
 
-  named_scope :sorted, :order=>'present_order asc, created_at desc' 
-  
+  scope :sorted, ->{ order('present_order asc, created_at desc') }
+
   before_save :fixup_url
 
   def fixup_url
@@ -20,12 +19,12 @@ class FeaturedReport < ActiveRecord::Base
   end
 
   def writeup_html
-    @writeup_html ||= RDiscount.new( writeup ).to_html
+    @writeup_html ||= RDiscount.new( writeup ).to_html.html_safe
   end
 
-
-  def to_json(opts={})
-    super( opts.merge(:methods=>[ :writeup_html ] ) )
+  def serializable_hash( options={} )
+    methods = { :methods=>[ :writeup_html ] }
+    super( options ? options.merge(methods) : methods )
   end
 
 end

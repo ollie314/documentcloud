@@ -17,6 +17,8 @@ require 'cloud-crowd'
 
 CloudCrowd.configure(File.dirname(__FILE__) + '/config.yml')
 CloudCrowd.configure_database(File.dirname(__FILE__) + '/database.yml')
+ActiveRecord::Base.logger = Logger.new(STDOUT)
+ActiveRecord::Base.logger.level = Logger::INFO
 
 map '/' do
   run CloudCrowd::Server

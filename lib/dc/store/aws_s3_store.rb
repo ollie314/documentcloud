@@ -12,6 +12,8 @@ module DC
 
       DEFAULT_ACCESS  = DC::Access::PUBLIC
 
+      AWS_REGION      = DC::CONFIG['aws_region']
+
       # 60 seconds for persistent connections.
       S3_PARAMS       = {:connection_lifetime => 60}
 
@@ -20,15 +22,19 @@ module DC
 
       module ClassMethods
         def asset_root
-          Rails.env.production? ? "http://s3.documentcloud.org" : "http://s3.amazonaws.com/#{BUCKET_NAME}"
+          if AWS_REGION == 'us-east-1'
+            "https://s3.amazonaws.com/#{BUCKET_NAME}"
+          else
+            "https://s3-#{AWS_REGION}.amazonaws.com/#{BUCKET_NAME}"
+          end
         end
         def web_root
-          Thread.current[:ssl] ? "https://s3.amazonaws.com/#{BUCKET_NAME}" : asset_root
+          asset_root
         end
       end
       
       def initialize
-        @key, @secret = SECRETS['aws_access_key'], SECRETS['aws_secret_key']
+        @key, @secret = DC::SECRETS['aws_access_key'], DC::SECRETS['aws_secret_key']
       end
       
       def read(path)
@@ -39,8 +45,15 @@ module DC
         bucket.objects[path].content_length
       end
       
-      def authorized_url(path)
-        bucket.objects[path].url_for(:read, :secure => Thread.current[:ssl], :expires => AUTH_PERIOD).to_s
+      def authorized_url(path, opts={})
+        options = {
+          secure: Thread.current[:ssl],
+          expires: AUTH_PERIOD
+        }
+        # We only want to interject a content type if it's specified; otherwise,
+        # let S3 serve whatever content type the file was stored with.
+        options[:response_content_type] = opts[:content_type] if opts[:content_type]
+        bucket.objects[path].url_for(:read, options).to_s
       end
       
       def list(path)
@@ -97,8 +110,18 @@ module DC
         remove_file(document.page_text_path(page_number))
       end
       
-      def save_database_backup(name, path)
-        bucket.objects["backups/#{name}/#{Date.today}.dump"].write(File.open(path))
+      def save_tabula_page(document, page_number, data, access=DEFAULT_ACCESS)
+        tabula_page_path = document.page_text_path(page_number).sub(/txt$/, 'csv')
+        save_file(data, tabula_page_path, access, :string => true)
+      end
+      
+      def delete_tabula_page(document, page_number)
+        tabula_page_path = document.page_text_path(page_number).sub(/txt$/, 'csv')
+        remove_file(tabula_page_path)
+      end
+      
+      def save_backup(src, dest)
+        bucket.objects["backups/#{dest}"].write(File.open(src))
       end
       
       # This is going to be *extremely* expensive. We can thread it, but
@@ -124,7 +147,7 @@ module DC
       end
       
       def destroy(document)
-        bucket.objects.with_prefix(document.path).delete_all
+        bucket.objects.with_prefix(File.join(document.path, '/')).delete_all
       end
       
       # Duplicate all of the assets from one document over to another.
@@ -136,11 +159,11 @@ module DC
       end
       
       def copy_text(source, destination, access)
-        bucket.objects[source.full_text_path].copy_to(destination.full_text_path, :acl => ACCESS_TO_ACL[access])
+        options = {:acl => ACCESS_TO_ACL[access], :content_type => content_type(destination.full_text_path)}
+        bucket.objects[source.full_text_path].copy_to(destination.full_text_path, options)
         source.pages.each do |page|
           num = page.page_number
           source_object = bucket.objects[source.page_text_path(num)]
-          options = {:acl => ACCESS_TO_ACL[access], :content_type => content_type(source.page_text_path(num))}
           source_object.copy_to(destination.page_text_path(num), options)
         end
         true
@@ -172,6 +195,21 @@ module DC
         true
       end
 
+      # This is a potentially expensive (as in $$) method since S3 charges by the request
+      # returns an array of paths that should exist in the S3 bucket but do not
+      def validate_assets(document)
+        invalid = []
+        1.upto(document.page_count) do |pg|
+          text_path  = document.page_text_path(pg)
+          invalid << text_path unless bucket.objects[text_path].exists?
+          Page::IMAGE_SIZES.keys.each do |size|
+            image_path = document.page_image_path(pg, size)
+            invalid << image_path unless bucket.objects[image_path].exists?
+          end
+        end
+        invalid
+      end
+      
       private
 
       def s3
@@ -185,13 +223,35 @@ module DC
       def secure_s3
         @secure_s3 ||= ::AWS::S3.new(:access_key_id => @key, :secret_access_key => @secret, :secure => true)
       end
+      
+      def cloudfront
+        @cloudfront ||= create_cloudfront
+      end
+      
+      def create_cloudfront
+        ::AWS::CloudFront.new :access_key_id => @key, :secret_access_key => @secret
+      end
+      
+      def cloudfront_invalidation_list
+        cloudfront.client.list_invalidations(:distribution_id=>DC::SECRETS['cloudfront_distribution_id'])
+      end
+      
+      def cloudfront_invalidation_quantity
+        cloudfront_invalidation_list[:quantity]
+      end
 
       def bucket
         @bucket ||= (s3.buckets[BUCKET_NAME].exists? ? s3.buckets[BUCKET_NAME] : s3.buckets.create(BUCKET_NAME))
       end
 
       def content_type(s3_path)
-        Mime::Type.lookup_by_extension(File.extname(s3_path)).to_s
+        ext = File.extname(s3_path).remove(/^\./)
+        case ext
+          when 'txt'
+            'text/plain; charset=utf-8'
+          else
+            Mime::Type.lookup_by_extension(ext).to_s
+        end
       end
 
       # Saves a local file to a location on S3, and returns the public URL.

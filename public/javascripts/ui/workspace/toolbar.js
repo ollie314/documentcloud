@@ -14,7 +14,7 @@ dc.ui.Toolbar = Backbone.View.extend({
     Backbone.View.call(this, options);
     _.bindAll(this, '_updateSelectedDocuments',
       '_deleteSelectedDocuments', 'editTitle', 'editSource', 'editDescription',
-      'editRelatedArticle', 'editAccess', 'openDocumentEmbedDialog', 'openNoteEmbedDialog',
+      'editRelatedArticle', 'editAccess', 'openDocumentEmbedDialog', 'openNoteEmbedDialog', 'openPageEmbedDialog',
       'openSearchEmbedDialog', 'openPublicationDateDialog', 'requestDownloadViewers',
       'checkFloat', '_analyzeInOverview', '_openTimeline', '_viewEntities',
       'editPublishedUrl', 'openShareDialog', '_markOrder', '_removeFromSelectedProject',
@@ -134,9 +134,22 @@ dc.ui.Toolbar = Backbone.View.extend({
     checkEdit ? this.edit(continuation) : continuation(Documents.selected());
   },
 
+  // Opens the search embed dialog if the query is valid
+  // otherwise displays an error dialog with an appropriate error message
   openSearchEmbedDialog : function() {
+    var query;
     var docs = Documents.chosen();
-    dc.app.searchEmbedDialog = new dc.ui.SearchEmbedDialog(docs);
+    if ( docs.length ){
+      query = Documents.searchEmbedQuery(docs);
+    } else {
+      query = dc.app.searcher.publicQuery() || "";
+    }
+    if (! query){
+      var error = _.t( docs.length ? "search_embed_too_long_error" : "search_embed_nothing_chosen" );
+      dc.ui.Dialog.alert(error);
+    } else {
+      dc.app.searchEmbedDialog = new dc.ui.SearchEmbedDialog(docs, query);
+    }
   },
 
   openDocumentEmbedDialog : function() {
@@ -146,6 +159,15 @@ dc.ui.Toolbar = Backbone.View.extend({
     var doc = docs[0];
     if (!doc.checkAllowedToEdit(Documents.EMBED_FORBIDDEN)) return;
     (new dc.ui.DocumentEmbedDialog(doc)).render();
+  },
+
+  openPageEmbedDialog : function() {
+    var docs = Documents.chosen();
+    if (!docs.length) return;
+    if (docs.length != 1) return dc.ui.Dialog.alert( _.t('select_single_to_embed') );
+    var doc = docs[0];
+    if (!doc.checkAllowedToEdit(Documents.EMBED_FORBIDDEN)) return;
+    dc.app.pageEmbedDialog = new dc.ui.PageEmbedDialog(doc);
   },
 
   openNoteEmbedDialog : function() {
@@ -230,7 +252,7 @@ dc.ui.Toolbar = Backbone.View.extend({
     if (/\S/.test(query)) {
       dc.ui.Dialog.confirm(
         _.t('export_to_overview_explain'),
-        function() { window.open("https://www.overviewproject.org/imports/documentcloud/new/" + encodeURIComponent(query), '_blank'); },
+        function() { window.open("https://www.overviewdocs.com/imports/documentcloud/new/" + encodeURIComponent(query), '_blank'); },
         {
           saveText: _.t('export'),
           closeText: _.t('cancel')
@@ -238,7 +260,7 @@ dc.ui.Toolbar = Backbone.View.extend({
       );
     } else {
       // Overview will refuse to import all DocumentCloud documents at once
-      dc.ui.Dialog.alert("In order to analyze documents in Overview, please select a project or some documents.");
+      dc.ui.Dialog.alert(_.t('export_to_overview_select_something'));
     }
   },
 
@@ -290,7 +312,7 @@ dc.ui.Toolbar = Backbone.View.extend({
     this._enableMenuItems(menu);
     var singular = Documents.selectedCount == 1;
     $('.share_documents', menu.content).text( _.t('share_x_documents', Documents.selectedCount ) );
-    $('.share_project', menu.content).toggleClass('disabled', !Projects.selectedCount);
+    $('.share_project', menu.content).toggleClass('disabled', !Projects.firstSelected() );
     var overviewWillAnalyzeProject = !Documents.selectedCount && !!Projects.firstSelected();
     var overviewDisabled = !Documents.selectedCount && !/\S/.test(dc.app.searcher.publicQuery());
     $('.menu_item.analyze_in_overview', menu.content)
@@ -305,7 +327,8 @@ dc.ui.Toolbar = Backbone.View.extend({
     var accountItems = [
       {title : _.t('embed_document_viewer'), onClick : this.openDocumentEmbedDialog,    attrs: {'class': 'singular'}},
       {title : _.t('embed_document_list'),   onClick : this.openSearchEmbedDialog,      attrs: {'class': 'always'}},
-      {title : _.t('embed_a_note'),          onClick : this.openNoteEmbedDialog,        attrs: {'class': 'singular'}},
+      {title : _.t('embed_page'),            onClick : this.openPageEmbedDialog,        attrs: {'class': 'singular mark_responsive', 'data-responsive-text': _.t('responsive')}},
+      {title : _.t('embed_a_note'),          onClick : this.openNoteEmbedDialog,        attrs: {'class': 'singular mark_responsive', 'data-responsive-text': _.t('responsive')}},
       {title : _.t('set_publication_date'),  onClick : this.openPublicationDateDialog,  attrs: {'class': 'private_only'}},
       {title : _.t('download_viewer'),       onClick : this.requestDownloadViewers}
     ];

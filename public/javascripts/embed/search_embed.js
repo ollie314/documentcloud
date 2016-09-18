@@ -54,23 +54,26 @@
       page     : json.page,
       dc_url   : json.dc_url
     });
-
-    if (searches[id].isLoaded) {
-      searches[id].documents.reset(json.documents);
-      if (searches[id].options.search && !searches[id].originalLoaded) {
-        searches[id].workspace.render();
+    
+    var search = searches[id];
+    if (search.isLoaded) {
+      search.documents.reset(json.documents);
+      if (search.options.search && !search.originalLoaded) {
+        search.workspace.render();
       }
-      if (searches[id].options.q == searches[id].options.original_query) {
-        searches[id].originalLoaded = true;
+      if (search.options.q == search.options.original_query) {
+        search.originalLoaded = true;
       }
     } else {
-      searches[id].documents       = new dc.EmbedDocumentSet(json.documents, searches[id].options);
-      searches[id].workspace       = new dc.EmbedWorkspaceView(searches[id].options);
-      searches[id].originalOptions = _.clone(searches[id].options);
-      searches[id].isLoaded        = true;
-      searches[id].search          = searches[id].workspace.search;
+      search.documents       = new dc.EmbedDocumentSet(json.documents, search.options);
+      search.workspace       = new dc.EmbedWorkspaceView(search.options);
+      search.originalOptions = _.clone(search.options);
+      search.isLoaded        = true;
+      search.search          = search.workspace.search;
     }
-
+    searches[id] = search;
+    
+    if (search.options && search.options.afterLoad) search.options.afterLoad(search);
   };
 
   dc.EmbedDocument = dc.Backbone.Model.extend({
@@ -108,7 +111,8 @@
       'keypress .DC-search-box'    : 'maybePerformSearch'
     },
 
-    initialize : function() {
+    initialize : function(options) {
+      this.options = options;
       _.bindAll(this, 'search');
       this.embed     = searches[this.options.id];
       this.container = $(this.options.container);
@@ -261,10 +265,11 @@
     className : 'DC-document-tile-container',
 
     events : {
-      'click a.DC-document-tile' : 'click'
+      'click.dcSearch a.DC-document-tile' : 'click'
     },
 
-    initialize : function() {
+    initialize : function(options) {
+      this.options = options;
       this.embed = this.options.embed;
     },
 
@@ -297,7 +302,7 @@
       if (this.embed.options.click) {
         return this.embed.options.click(e, this);
       } else {
-        return this.open(e);
+        this.open(e);
       }
     },
 
@@ -305,8 +310,11 @@
       var query   = this.embed.options.pass_search && this.embed.query;
       var suffix  = query ? "#search/p1/" + encodeURIComponent(query) : '';
       var baseUrl = this.model.get('resources').published_url || this.model.get('canonical_url');
-      window.open((this.model.get('resources').published_url || this.model.get('canonical_url')) + suffix);
-      return false;
+      var href    = (this.model.get('resources').published_url || this.model.get('canonical_url')) + suffix;
+      var $link   = $(e.target).closest('a.DC-document-tile');
+      // Triggering `click.foo` means we skip the `click.dcSearch` observed 
+      // event above and just do a native click
+      $link.attr('href', href).trigger('click.foo');
     }
 
   });

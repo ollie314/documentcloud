@@ -1,40 +1,56 @@
 class DocumentsController < ApplicationController
   layout nil
 
-  before_filter :bouncer,             :only => [:show] if Rails.env.staging?
-  before_filter :login_required,      :only => [:update, :destroy]
-  before_filter :prefer_secure,       :only => [:show]
-  before_filter :api_login_optional,  :only => [:send_full_text, :send_pdf, :send_page_text, :send_page_image]
-  before_filter :set_p3p_header,      :only => [:show]
+  before_action :bouncer,             :only => [:show] if exclusive_access?
+  before_action :login_required,      :only => [:update, :destroy]
+  before_action :prefer_secure,       :only => [:show]
+  before_action :api_login_optional,  :only => [:send_full_text, :send_pdf, :send_page_text, :send_page_image]
+  before_action :set_p3p_header,      :only => [:show]
+  after_action  :allow_iframe,        :only => [:show]
+  skip_before_action :verify_authenticity_token, :only => [:send_page_text]
 
   SIZE_EXTRACTOR        = /-(\w+)\Z/
-  PAGE_NUMBER_EXTRACTOR = /-p(\d+)/
+  PAGE_NUMBER_EXTRACTOR = /.*-p(\d+)/
+  
+  READONLY_ACTIONS = [
+    :show, :entities, :entity, :dates, :occurence, :mentions, :status, :per_page_note_counts, :queue_length,
+    :send_pdf, :send_page_image, :send_full_text, :send_page_text, :search, :preview
+  ]
+  before_action :read_only_error, :except => READONLY_ACTIONS if read_only?
 
   def show
     Account.login_reviewer(params[:key], session, cookies) if params[:key]
     doc = current_document(true)
     return forbidden if doc.nil? && Document.exists?(params[:id].to_i)
-    return render :file => "#{Rails.root}/public/doc_404.html", :status => 404 unless doc
+    return not_found unless doc
+    options = {data: true}.merge(pick(params, :data))
+    #fresh_when last_modified: (current_document.updated_at || Time.now).utc, etag: current_document
     respond_to do |format|
       format.html do
-        @no_sidebar = (params[:sidebar] || '').match /no|false/
-        populate_editor_data if current_account && current_organization
+        @sidebar    = !(params[:sidebar] || '').match(/no|false/)
+        @responsive = (params[:responsive] || '').match /yes|true/
+        populate_editor_data if logged_in?
         return if date_requested?
         return if entity_requested?
+        make_oembeddable(doc)
+        render :layout => nil
       end
+      format.htm  { redirect_to(doc.canonical_url(:html)) }
       format.pdf  { redirect_to(doc.pdf_url) }
       format.text { redirect_to(doc.full_text_url) }
       format.json do
-        @response = doc.canonical
-        json_response
+        @response = doc.canonical(options)
+        # TODO: https://github.com/documentcloud/documentcloud/issues/291
+        # cache_page @response.to_json if doc.cacheable?
+        render_cross_origin_json
       end
       format.js do
-        js = "DV.loadJSON(#{doc.canonical.to_json});"
+        js = "DV.loadJSON(#{doc.canonical(options).to_json});"
         cache_page js if doc.cacheable?
         render :js => js
       end
       format.xml do
-        render :xml => doc.canonical.to_xml(:root => 'document')
+        render :xml => doc.canonical(options).to_xml(:root => 'document')
       end
       format.rdf do
         @doc = doc
@@ -46,26 +62,17 @@ class DocumentsController < ApplicationController
     return not_found unless doc = current_document(true)
     attrs = pick(params, :access, :title, :description, :source,
                          :related_article, :remote_url, :publish_at, :data, :language)
-    success = doc.secure_update attrs, current_account
-    return json(doc, 403) unless success
-    if doc.cacheable?
-      expire_page doc.canonical_cache_path
-      doc.annotations.each{ |note| expire_page note.canonical_cache_path }
-    end
+    return json(doc, 403) unless doc.secure_update attrs, current_account
+
+    clear_current_document_cache
     Document.populate_annotation_counts(current_account, [doc])
     json doc
   end
 
   def destroy
     return not_found unless doc = current_document(true)
-    if !current_account.owns_or_collaborates?(doc)
-      doc.errors.add_to_base "You don't have permission to delete the document."
-      return json(doc, 403)
-    end
-    if doc.cacheable?
-      expire_page doc.canonical_cache_path
-      doc.annotations.each{ |note| expire_page note.canonical_cache_path }
-    end
+    return forbidden(:error => "You don't have permission to delete the document.") unless current_account.owns_or_collaborates?(doc)
+    clear_current_document_cache
     doc.destroy
     json nil
   end
@@ -84,14 +91,14 @@ class DocumentsController < ApplicationController
 
   def reorder_pages
     return not_found unless doc = current_document(true)
-    return json(nil, 409) if params[:page_order].length != doc.page_count
+    return conflict if params[:page_order].length != doc.page_count
     doc.reorder_pages params[:page_order].map {|p| p.to_i }
     json doc
   end
 
   def upload_insert_document
     return not_found unless doc = current_document(true)
-    return json(nil, 409) unless params[:file] && (params[:insert_page_at] || params[:replace_pages_start])
+    return conflict unless params[:file] && params[:document_number] && (params[:insert_page_at] || params[:replace_pages_start])
 
     DC::Import::PDFWrangler.new.ensure_pdf(params[:file], params[:Filename]) do |path|
       DC::Store::AssetStore.new.save_insert_pdf(doc, path, params[:document_number]+'.pdf')
@@ -119,13 +126,9 @@ class DocumentsController < ApplicationController
     json doc
   end
 
-  def loader
-    render :action => 'loader', :content_type => :js
-  end
-
   def entities
-    ids = Document.accessible(current_account, current_organization).all(:select=>"id", :conditions =>{:id => params[:ids]}).map{ |d| d.id }
-    json 'entities' => Entity.all(:conditions => { :document_id => ids })
+    ids = Document.accessible(current_account, current_organization).where({:id => params[:ids]}).pluck('id')
+    json 'entities' => Entity.where({ :document_id => ids })
   end
 
   def entity
@@ -134,7 +137,7 @@ class DocumentsController < ApplicationController
       entities = []
       entities << entity if Document.accessible(current_account, current_organization).find_by_id(entity.document_id)
     else
-      ids = Document.accessible(current_account, current_organization).all(:select=>"id", :conditions =>{:id => params[:ids]}).map{ |d| d.id }
+      ids = Document.accessible(current_account, current_organization).where({:id => params[:ids]}).pluck('id')
       entities = Entity.search_in_documents(params[:kind], params[:value], ids)
     end
     json({'entities' => entities}.to_json(:include_excerpts => true))
@@ -150,8 +153,8 @@ class DocumentsController < ApplicationController
       return json(result)
     end
 
-    ids = Document.accessible(current_account, current_organization).all(:select=>"id", :conditions =>{:id => params[:ids]}).map{ |d| d.id }
-    dates = EntityDate.find_all_by_document_id(ids, :include => [:document])
+    ids = Document.accessible(current_account, current_organization).where({:id => params[:ids]}).pluck('id')
+    dates = EntityDate.where( :document_id => ids).includes(:document)
     json({'dates' => dates}.to_json)
   end
 
@@ -169,7 +172,7 @@ class DocumentsController < ApplicationController
 
   # Allows us to poll for status updates in the in-progress document uploads.
   def status
-    docs = Document.accessible(current_account, current_organization).all(:conditions => {:id => params[:ids]})
+    docs = Document.accessible(current_account, current_organization).where({:id => params[:ids]})
     Document.populate_annotation_counts(current_account, docs)
     render :json => { 'documents' => docs.map{|doc| doc.as_json(:cache_busting=>true) } }
   end
@@ -185,14 +188,14 @@ class DocumentsController < ApplicationController
 
   def reprocess_text
     return not_found unless doc = current_document(true)
-    return json(nil, 403) unless current_account.allowed_to_edit?(doc)
+    return forbidden unless current_account.allowed_to_edit?(doc)
     doc.reprocess_text(params[:ocr])
     json nil
   end
 
   def send_pdf
     return not_found unless current_document(true)
-    redirect_to current_document.pdf_url(:direct)
+    redirect_to current_document.pdf_url(direct: true)
   end
 
   def send_page_image
@@ -203,15 +206,17 @@ class DocumentsController < ApplicationController
   end
 
   def send_full_text
+    maybe_set_cors_headers
     return not_found unless current_document(true)
-    redirect_to current_document.full_text_url(:direct)
+    redirect_to current_document.full_text_url(direct: true)
   end
 
   def send_page_text
+    maybe_set_cors_headers
     return not_found unless current_page
     @response = current_page.text
-    return if jsonp_request?
-    render :text => @response
+    return render_as_jsonp(@response) if has_callback?
+    render :plain => @response
   end
 
   def set_page_text
@@ -221,10 +226,11 @@ class DocumentsController < ApplicationController
   end
 
   def search
-    doc       = current_document(true)
+    doc = current_document(true)
+    return not_found unless doc
     pages     = Page.search_for_page_numbers(params[:q], doc)
     @response = {'query' => params[:q], 'results' => pages}
-    json_response
+    render_cross_origin_json
   end
 
   def preview
@@ -252,7 +258,7 @@ class DocumentsController < ApplicationController
     rescue RangeError => e
       return false
     end
-    meta = current_document.entity_dates.first(:conditions => {:date => date})
+    meta = current_document.entity_dates.where(:date=>date).first
     redirect_to current_document.document_viewer_url(:date => meta, :allow_ssl => true)
   end
 
@@ -275,5 +281,9 @@ class DocumentsController < ApplicationController
     return false unless current_document(true)
     @current_page ||= current_document.pages.find_by_page_number(num.to_i)
   end
-
+  
+  def clear_current_document_cache
+    paths = current_document.cache_paths + current_document.annotations.map(&:cache_paths)
+    expire_pages paths
+  end
 end

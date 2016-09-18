@@ -1,3 +1,4 @@
+node_modules
 log/*
 tmp
 db/*.sqlite3
@@ -23,3 +24,8 @@ cloud_crowd.db
 .DS_Store
 public/search
 vendor/solr-4.0.0/solr-webapp/webapp/*
+.bundle
+public/javascripts/vendor/*/
+.vagrant
+.tm_properties
+Vagrantfile

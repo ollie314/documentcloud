@@ -1,10 +1,9 @@
 <!DOCTYPE html>
-
 <html lang="en">
 <head>
   <%= render :partial => 'common/meta_tags' %>
   <title><%= DC.t( @current_account, 'print_notes' ) %></title>
-  <%= render :partial=>'accounts/language_settings' %>
+  <%= render :partial => 'accounts/language_settings' %>
   <% css = [:ui, :workspace] + (@stylesheets || []) + [{:media => 'all'}] %>
   <% js  = [:core] + (@javascripts || []) %>
   <%= include_stylesheets *css %>
@@ -13,7 +12,7 @@
     <script>window.location = '/workspace/upgrade';</script>
   <![endif]-->
   <!--[if lt IE 9]>
-    <%= include_stylesheets :ie_only, :embed_assets => false %>
+    <%= include_stylesheets :lt_ie_9, :embed_assets => false %>
   <![endif]-->
 </head>
 <body class="print_notes">
@@ -23,7 +22,7 @@
     // print and close the page.
 
     $(document.body).append((new dc.ui.DocumentList().render()).el);
-    Documents.reset([<%= @documents_json.join(',') %>]);
+    Documents.reset([<%= raw @documents_json.join(',') %>]);
     $(window).load(function() {
       window.print();
     });
