@@ -43,18 +43,14 @@ class AccountsController < ApplicationController
   def index
     respond_to do |format|
       format.html do
-        if logged_in?
-          if current_account.real?
-            @projects = Project.load_for(current_account)
-            @current_organization = current_account.organization
-            @organizations = Organization.all_slugs
-            @has_documents = Document.owned_by(current_account).count(:limit => 1) > 0
-            return render
-          else
-            return redirect_to '/public/search'
-          end
+        if logged_in? and current_account.real?
+          @projects = Project.load_for(current_account)
+          @current_organization = current_account.organization
+          @organizations = Organization.all_slugs
+          @has_documents = Document.owned_by(current_account).exists?
+          return render :template => 'workspace/index'
         end
-        redirect_to '/home'
+        redirect_to home_path
       end
       format.json do
         json current_organization.accounts.active
@@ -135,6 +131,16 @@ class AccountsController < ApplicationController
     account = current_organization.accounts.find(params[:id])
     LifecycleMailer.login_instructions( account, current_organization, current_account ).deliver_now
     json nil
+  end
+  
+  def mailboxes
+    # code goes here.
+  end
+  
+  def create_mailbox
+  end
+  
+  def destroy_mailbox
   end
 
   # Removing an account only changes their role so that they cannot
